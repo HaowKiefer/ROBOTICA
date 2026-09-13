@@ -1,0 +1,187 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[spanish]{babel}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{listings}
+\usepackage{xcolor}
+
+\geometry{top=2.5cm, bottom=2.5cm, left=2.5cm, right=2.5cm}
+
+% Configuración de colores para bloques de código
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+\definecolor{codeblue}{rgb}{0.0,0.4,0.8}
+
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},   
+    commentstyle=\color{codegray},
+    keywordstyle=\color{codeblue},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{red},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,         
+    breaklines=true,                 
+    captionpos=b,                    
+    keepspaces=true,                 
+    numbers=left,                    
+    numbersep=5pt,                  
+    showspaces=false,                
+    showstringspaces=false,
+    showtabs=false,                  
+    tabsize=2
+}
+
+\lstset{style=mystyle}
+
+\title{\textbf{Guía de Integración de micro-ROS en ESP32 DevKit V1 con ROS 2 Jazzy}}
+\author{\textbf{Desarrollo e Integración de Sistemas Embedded}}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+El presente documento detalla el procedimiento técnico para la compilación, instalación e integración de la librería micro-ROS en una tarjeta de desarrollo ESP32 DevKit V1 (30 pines) utilizando el entorno de desarrollo Arduino IDE sobre EndeavourOS. Asimismo, se documenta la resolución de conflictos de estructura de librerías, errores de arquitectura de compilación y contención de puertos serie al establecer comunicación con un Agente micro-ROS ejecutado en un contenedor Docker con ROS 2 Jazzy.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{Introducción y Requisitos del Sistema}
+
+La arquitectura micro-ROS permite llevar nodos de ROS 2 (Robot Operating System) a microcontroladores de bajos recursos utilizando el protocolo ligero Micro XRCE-DDS.
+
+\subsection{Especificaciones del Hardware}
+\begin{itemize}
+    \item \textbf{Placa de desarrollo:} ESP32 DevKit V1 (30 pines, microcontrolador Xtensa LX6 dual-core).
+    \item \textbf{Interfaz de comunicación:} Conector USB-C / chip de conversión USB a UART serie (generalmente CP2102 o CH340).
+\end{itemize}
+
+\subsection{Entorno de Software}
+\begin{itemize}
+    \item \textbf{Sistema Operativo Host:} EndeavourOS (Arch Linux).
+    \item \textbf{Versión de ROS 2:} ROS 2 Jazzy Jalisco.
+    \item \textbf{IDE:} Arduino IDE v2.x.
+    \item \textbf{Entorno de Contenedores:} Docker Engine.
+\end{itemize}
+
+---
+
+\section{Configuración de la Librería micro-ROS}
+
+\subsection{Corrección de la Estructura del Archivo ZIP}
+El instalador de librerías de Arduino IDE requiere estrictamente que los archivos estén contenidos dentro de una carpeta raíz con el nombre de la biblioteca. Si los archivos se encuentran en la raíz del archivo comprimido, el IDE arroja el error \texttt{Library install failed: archive is not valid: multiple files found in zip file top level}.
+
+Para estructurar correctamente la biblioteca para ROS 2 Jazzy, se ejecutó la compresión desde una ruta temporal aislada:
+
+\begin{lstlisting}[language=bash, caption={Estructuración e instalación de la biblioteca}]
+# 1. Crear directorio temporal limpio
+mkdir -p /tmp/microros_build/micro_ros_arduino
+
+# 2. Copiar archivos fuente al directorio contenedor
+rsync -av --exclude='*.zip' /home/haowkiefer/micro_ros_arduino/ /tmp/microros_build/micro_ros_arduino/
+
+# 3. Comprimir la biblioteca desde el directorio superior
+cd /tmp/microros_build
+zip -r /home/haowkiefer/micro_ros_arduino_jazzy.zip micro_ros_arduino -x "*.git*"
+
+# 4. Instalación directa en el entorno de Arduino
+mkdir -p ~/Arduino/libraries/micro_ros_arduino
+unzip ~/micro_ros_arduino_jazzy.zip -d /tmp/microros_temp
+cp -r /tmp/microros_temp/micro_ros_arduino/* ~/Arduino/libraries/micro_ros_arduino/
+rm -rf /tmp/microros_temp /tmp/microros_build
+\end{lstlisting}
+
+---
+
+\section{Configuración e Incidencias en Arduino IDE}
+
+\subsection{Selección del Modelo de Placa Correcto}
+Durante la compilación del firmware utilizando una arquitectura errónea (por ejemplo, seleccionando \texttt{ESP32-S3} en lugar de la placa estándar \texttt{ESP32}), el enlazador (\texttt{ld}) arroja fallos de referencias no definidas (\texttt{undefined reference to rmw\_uros\_...}) debido a la ausencia de binarios precompilados en la carpeta \texttt{src/esp32s3}.
+
+\begin{itemize}
+    \item \textbf{Placa objetivo:} \texttt{ESP32 Dev Module} (o \texttt{DOIT ESP32 DEVKIT V1}).
+    \item \textbf{Parámetros de Flash:}
+    \begin{itemize}
+        \item CPU Frequency: 240MHz (WiFi/BT)
+        \item Flash Frequency: 80MHz
+        \item Upload Speed: 921600 (o 115200)
+    \end{itemize}
+\end{itemize}
+
+\subsection{Solución al Error de Contención del Puerto Serie}
+Al intentar cargar el programa mediante \texttt{esptool}, se presentó la excepción:
+\begin{quote}
+\texttt{A serial exception error occurred: device reports readiness to read but returned no data (device disconnected or multiple access on port?)}
+\end{quote}
+
+Este conflicto ocurre porque el Agente micro-ROS ejecutado en Docker mantiene abierto el puerto \texttt{/dev/ttyUSB0}. El procedimiento para evitar el bloqueo del puerto es el siguiente:
+
+\begin{enumerate}
+    \item Detener el proceso del Agente en la terminal mediante \texttt{Ctrl + C}.
+    \item Ejecutar la carga (\textit{Upload}) del programa en Arduino IDE.
+    \item Si el IDE se atasca en la secuencia \texttt{Connecting....}, mantener presionado el botón \textbf{BOOT} físico de la placa ESP32.
+    \item Una vez terminada la carga (\texttt{Hard resetting via RTS pin...}), volver a iniciar el Agente en Docker.
+\end{enumerate}
+
+---
+
+\section{Ejecución del Agente micro-ROS y Verificación}
+
+\subsection{Inicio del Agente con Docker}
+El Agente micro-ROS actúa como puente de traducción entre los paquetes ligeros Micro XRCE-DDS del microcontrolador y la red de ROS 2 en la computadora Host.
+
+\begin{lstlisting}[language=bash, caption={Comando de ejecución del Agente en Docker}]
+docker run -it --rm \
+  --net=host \
+  --device=/dev/ttyUSB0 \
+  microros/micro-ros-agent:jazzy \
+  serial --dev /dev/ttyUSB0 -b 115200
+\end{lstlisting}
+
+\subsection{Secuencia de Establecimiento de Sesión}
+Al reiniciar la placa mediante el botón \textbf{EN/RST}, se genera la handshake de inicio en la terminal del Agente:
+
+\begin{lstlisting}[language=bash]
+[info] TermiosAgentLinux.cpp | init | running... | fd: 3
+[info] Root.cpp | create_client | create | client_key: 0x7E9244AB
+[info] SessionManager.hpp | establish_session | session established
+[info] ProxyClient.cpp | create_replier | replier created | requester_id: 0x000(7)
+\end{lstlisting}
+
+\subsection{Prueba del Servicio desde ROS 2}
+Con el ejemplo \texttt{micro-ros\_addtwoints\_service} cargado en el ESP32:
+
+1. \textbf{Comprobación del Grafo de ROS 2:}
+\begin{lstlisting}[language=bash]
+ros2 service list
+# Salida esperada: /addtwoints
+\end{lstlisting}
+
+2. \textbf{Llamada al servicio en el microcontrolador:}
+\begin{lstlisting}[language=bash]
+ros2 service call /addtwoints example_interfaces/srv/AddTwoInts "{a: 14, b: 28}"
+\end{lstlisting}
+
+3. \textbf{Respuesta devuelta por el ESP32:}
+\begin{lstlisting}[language=bash]
+response:
+example_interfaces.srv.AddTwoInts_Response(sum=42)
+\end{lstlisting}
+
+---
+
+\section{Conclusiones}
+\begin{itemize}
+    \item La arquitectura de binarios precompilados para micro-ROS exige seleccionar el modelo de placa de desarrollo correspondiente en el entorno de compilación para evitar errores de enlazado.
+    \item Es imperativo liberar el acceso físico al puerto serie \texttt{/dev/ttyUSB0} antes de ejecutar el cargador \texttt{esptool}.
+    \item La comunicación bidireccional cliente/servidor entre la PC con ROS 2 Jazzy y la tarjeta ESP32 DevKit V1 operando a 115200 baudios quedó validada correctamente.
+\end{itemize}
+
+\end{document}
